@@ -1,39 +1,20 @@
-from ryu.base import app_manager
-from ryu.controller import ofp_event,dpset
-from ryu.controller.handler import MAIN_DISPATCHER, HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER
-from ryu.controller.handler import set_ev_cls
-
-#WEB
 import os
+
 from webob.static import DirectoryApp
-from ryu.base import app_manager
 
-# LLDP PACKET IN
-from ryu.lib.packet import packet, ethernet
-from ryu.lib.packet import lldp, ether_types
-from ryu.ofproto.ether import ETH_TYPE_LLDP
-from ryu.ofproto.ether import ETH_TYPE_CFM
-
-from ryu.ofproto import ofproto_v1_3
-import json
-
-#RUY TOPOLOGY DISCOVERY
-from ryu.topology import event, switches
-from ryu.topology.api import get_switch, get_link
-
-from ryu.app import simple_switch_13
-from webob import Response
-from ryu.app.wsgi import ControllerBase, WSGIApplication, route
-from ryu.lib import dpid as dpid_lib
 import invoke as invoke
 import logger as l
-import array
-
-from ryu.app.gui_topology import gui_topology
-#for debug purposes to self.log.info out all fields, dictionary keys, etc.
-
-#for packet header analysis
-from ryu.lib.packet import packet,ethernet,lldp
+from ryu.app.wsgi import ControllerBase, WSGIApplication, route
+from ryu.base import app_manager
+from ryu.controller import ofp_event,dpset
+from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER
+from ryu.controller.handler import set_ev_cls
+from ryu.lib.packet import packet,ethernet
+from ryu.ofproto import ofproto_v1_3
+from ryu.ofproto.ether import ETH_TYPE_CFM
+from ryu.ofproto.ether import ETH_TYPE_LLDP
+from ryu.topology import event
+from ryu.topology.api import get_switch, get_link
 
 # Topo
 # h3 -- s2 -- s1 -- h1
@@ -1076,8 +1057,8 @@ class GUIServerController(ControllerBase):
         return self.static_app(req)
 
 print("GUISERVER CONTROLLER")
-# app_manager.require_app('ryu.app.rest_topology')
-# app_manager.require_app('ryu.app.ws_topology')
-# app_manager.require_app('ryu.app.ofctl_rest')
+app_manager.require_app('ryu.app.rest_topology')
+app_manager.require_app('ryu.app.ws_topology')
+app_manager.require_app('ryu.app.ofctl_rest')
 
 #
