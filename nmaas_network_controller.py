@@ -2,21 +2,38 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event,dpset
 from ryu.controller.handler import MAIN_DISPATCHER, HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER
 from ryu.controller.handler import set_ev_cls
+
+#WEB
+import os
+from webob.static import DirectoryApp
+from ryu.base import app_manager
+
+# LLDP PACKET IN
+from ryu.lib.packet import packet, ethernet
+from ryu.lib.packet import lldp, ether_types
+from ryu.ofproto.ether import ETH_TYPE_LLDP
+from ryu.ofproto.ether import ETH_TYPE_CFM
+
 from ryu.ofproto import ofproto_v1_3
 import json
+
+#RUY TOPOLOGY DISCOVERY
+from ryu.topology import event, switches
+from ryu.topology.api import get_switch, get_link
 
 from ryu.app import simple_switch_13
 from webob import Response
 from ryu.app.wsgi import ControllerBase, WSGIApplication, route
 from ryu.lib import dpid as dpid_lib
-
 import invoke as invoke
 import logger as l
 import array
+
+from ryu.app.gui_topology import gui_topology
 #for debug purposes to self.log.info out all fields, dictionary keys, etc.
 
 #for packet header analysis
-from ryu.lib.packet import packet,ethernet
+from ryu.lib.packet import packet,ethernet,lldp
 
 # Topo
 # h3 -- s2 -- s1 -- h1
@@ -104,16 +121,24 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(NMaaS_Network_Controller, self).__init__(*args, **kwargs)
-
-        wsgi = kwargs['wsgi']
-        wsgi.register(NMaaS_Network_Controller_RESTAPI,
-                      {nmaas_network_controller_instance_name: self})
-        #get a logger
+        # get a logger
         self.log = l.getLogger(self.__class__.__name__, "DEBUG")
         self.log.info("UP and RUNNING!")
 
+        self.log.debug("Registering NMAAS CONTROLLER RESTAPI")
+        wsgi = kwargs['wsgi']
+        # wsgi.register(NMaaS_Network_Controller_RESTAPI,
+        #               {nmaas_network_controller_instance_name: self})
+
+        self.log.debug("Registering GUI_TOPOLOGY")
+        wsgi.register(GUIServerController,
+                      {nmaas_network_controller_instance_name: self})
+
+
         #create nmaas fw instance
         self.nmaas_fw = NMaaS_FrameWork(self)
+
+        self.topology_api_app = self
 
     def send_flow_mod(self, datapath, table_id, match, inst, **args):
         ofp = datapath.ofproto
@@ -229,6 +254,20 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         self.log.info("Sending get-config to switch {}".format(datapath.id))
         datapath.send_msg(req)
 
+
+    # ---------- TOPOLOGY DISCOVERY ----------------
+    @set_ev_cls(event.EventSwitchEnter)
+    def get_topology_data(self, ev):
+        switch_list = get_switch(self.topology_api_app, None)
+
+        switches = [switch.dp.id for switch in switch_list]
+        links_list = get_link(self.topology_api_app, None)
+        links = [(link.src.dpid, link.dst.dpid, {'port': link.src.port_no}) for link in links_list]
+
+        self.log.info(switches)
+        self.log.info(links)
+    # ----------------------------------------------
+
     @set_ev_cls(ofp_event.EventOFPGetConfigReply, MAIN_DISPATCHER)
     def get_config_reply_handler(self, ev):
         '''
@@ -270,28 +309,28 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
                           msg.auxiliary_id, msg.capabilities)
 
     # ------------ SWITCH CONNECTED ----------
-    @set_ev_cls(dpset.EventDP, CONFIG_DISPATCHER)
-    def connection_handler(self, ev):
-        # pself.log.info(vars(ev))
-        enter_leave = ev.enter
-        dp = ev.dp
-
-        #update switches dictionary
-        self.switches["s{}".format(dp.id)]['datapath']=dp
-
-        ports = ev.ports
-        # self.log.info("Enterr_leave: {}".format(enter_leave))
-        if enter_leave == True:
-            self.log.info("Switch with datapath id {} has been connected".format(dp.id))
-            self.install_flow_rules(dp)
-            if dp.id not in self.mac_to_ports:
-                self.mac_to_ports[dp.id] = dict()
-        else:
-            self.log.info("Switch with datapath id {} has been disconnected".format(dp.id))
-            if dp.id in self.mac_to_ports:
-                self.mac_to_ports.pop(dp.id)
-
-        self.log.info("mac_to_ports:{}".format(self.mac_to_ports))
+    # @set_ev_cls(dpset.EventDP, CONFIG_DISPATCHER)
+    # def connection_handler(self, ev):
+    #     # pself.log.info(vars(ev))
+    #     enter_leave = ev.enter
+    #     dp = ev.dp
+    #
+    #     #update switches dictionary
+    #     self.switches["s{}".format(dp.id)]['datapath']=dp
+    #
+    #     ports = ev.ports
+    #     # self.log.info("Enterr_leave: {}".format(enter_leave))
+    #     if enter_leave == True:
+    #         self.log.info("Switch with datapath id {} has been connected".format(dp.id))
+    #         self.install_flow_rules(dp)
+    #         if dp.id not in self.mac_to_ports:
+    #             self.mac_to_ports[dp.id] = dict()
+    #     else:
+    #         self.log.info("Switch with datapath id {} has been disconnected".format(dp.id))
+    #         if dp.id in self.mac_to_ports:
+    #             self.mac_to_ports.pop(dp.id)
+    #
+    #     self.log.info("mac_to_ports:{}".format(self.mac_to_ports))
 
     # ------------ PORT ADD ------------
     @set_ev_cls(dpset.EventPortAdd, CONFIG_DISPATCHER)
@@ -360,12 +399,32 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         vlan = False
         arp = False
         icmp = False
+        lldp = False
 
-        self.log.info("\nPacket_IN")
         msg = ev.msg
-        dp = msg.datapath
-        self.log.info("...from DpId:\t{}".format(dp.id))
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocol(ethernet.ethernet)
+        print eth
+        #ignore lldp
+        if eth.ethertype in (ETH_TYPE_LLDP, ETH_TYPE_CFM):
+            # self.log.info("LLDP packet - ignore")
+            self.get_topology_data(ev)
+            return
+        # if eth.ethertype in (ETH_TYPE_LLDP, ETH_TYPE_CFM):
+        #     return
 
+        dp = msg.datapath
+
+        # pkt = packet.Packet(ev.msg.data)
+        # lldp_packet = packet.Packet(msg.data).get_protocol(packet.ethernet.lldp)
+        # print lldp_packet
+
+        # for p in pkt.protocols:
+        #     print p.protocol_name
+        # self.log.info("\nPacket_IN")
+
+        # self.log.info("...from DpId:\t{}".format(dp.id))
+        # self.get_topology_data(ev)
 
 class NMaaS_FrameWork():
     '''
@@ -994,3 +1053,31 @@ class NMaaS_Network_Controller_RESTAPI(ControllerBase):
 
 
 
+
+
+PATH = os.path.dirname(__file__)
+
+class GUIServerController(ControllerBase):
+    def __init__(self, req, link, data, **config):
+        super(GUIServerController, self).__init__(req, link, data, **config)
+        print("GUISERVER CONTROLLER")
+
+        self.nmaas_network_controller_app = data[nmaas_network_controller_instance_name]
+        nmaas=self.nmaas_network_controller_app
+
+
+        path = "%s/ryu/app/gui_topology/html/" % PATH
+        self.static_app = DirectoryApp(path)
+
+    @route('topology', '/{filename:.*}')
+    def static_handler(self, req, **kwargs):
+        if kwargs['filename']:
+            req.path_info = kwargs['filename']
+        return self.static_app(req)
+
+print("GUISERVER CONTROLLER")
+# app_manager.require_app('ryu.app.rest_topology')
+# app_manager.require_app('ryu.app.ws_topology')
+# app_manager.require_app('ryu.app.ofctl_rest')
+
+#

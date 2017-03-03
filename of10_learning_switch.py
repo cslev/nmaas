@@ -2,22 +2,26 @@ from ryu.base import app_manager
 from ryu.controller import ofp_event,dpset
 from ryu.controller.handler import MAIN_DISPATCHER, HANDSHAKE_DISPATCHER, CONFIG_DISPATCHER
 from ryu.controller.handler import set_ev_cls
-from ryu.ofproto import ofproto_v1_0
+from ryu.ofproto import ofproto_v1_3
 import array
 #for debug purposes to print out all fields, dictionary keys, etc.
 from pprint import pprint
+#RUY TOPOLOGY DISCOVERY
+from ryu.topology import event, switches
+from ryu.topology.api import get_switch, get_link
 
 #for packet header analysis
 from ryu.lib.packet import packet,ethernet
 
 class L2Switch(app_manager.RyuApp):
-    OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION]
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     mac_to_ports = dict()
 
     def __init__(self, *args, **kwargs):
         super(L2Switch, self).__init__(*args, **kwargs)
         # store mac to port mappings for all switches
+        self.topology_api_app = self
 
     # @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     # def switch_features_handler(self, ev):
@@ -103,6 +107,19 @@ class L2Switch(app_manager.RyuApp):
     #     print("Reason: {}".format(reason))
 
 
+    # ---------- TOPOLOGY DISCOVERY ----------------
+    @set_ev_cls(event.EventSwitchEnter)
+    def get_topology_data(self, ev):
+        switch_list = get_switch(self.topology_api_app, None)
+
+        switches = [switch.dp.id for switch in switch_list]
+        links_list = get_link(self.topology_api_app, None)
+        links = [(link.src.dpid, link.dst.dpid, {'port': link.src.port_no}) for link in links_list]
+
+        self.log.info(switches)
+        self.log.info(links)
+    # ----------------------------------------------
+
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
         vlan = False
@@ -115,21 +132,22 @@ class L2Switch(app_manager.RyuApp):
         print("...from DpId:\t{}".format(dp.id))
 
 
-        pkt = packet.Packet(array.array('B', ev.msg.data))
-        for p in pkt.protocols:
-            # print p.protocol_name, p
-            if p.protocol_name == 'vlan':
-                # print("Packet has a VLAN (vid: {}".format(p.vid))
-                vlan = True
-            elif p.protocol_name == 'arp':
-                arp = True
-                # print("Packet is ARP")
-            elif p.protocol_name == 'icmp':
-                icmp = True
-                # print("ICMP packet")
-            else:
-                continue
-                # print("Normal packet ?")
+        pkt = packet.Packet(ev.msg.data)
+        for p in pkt:
+            print(p)
+            # # print p.protocol_name, p
+            # if p.protocol_name == 'vlan':
+            #     # print("Packet has a VLAN (vid: {}".format(p.vid))
+            #     vlan = True
+            # elif p.protocol_name == 'arp':
+            #     arp = True
+            #     # print("Packet is ARP")
+            # elif p.protocol_name == 'icmp':
+            #     icmp = True
+            #     # print("ICMP packet")
+            # else:
+            #     continue
+            #     # print("Normal packet ?")
         ofp = dp.ofproto
         ofp_parser = dp.ofproto_parser
 
