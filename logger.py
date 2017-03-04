@@ -111,7 +111,7 @@ def getLogger(class_name, level):
 #     logging.addLevelName( logging.ERROR, "\033[1;41m%s\033[1;0m" % logging.getLevelName(logging.ERROR))
    
     # create formatter and add it to the handlers
-    formatter = logging.Formatter('[%(name)s] - %(levelname)s\r')
+    formatter = logging.Formatter('[%(name)s] - %(levelname)s')
     ch.setFormatter(formatter)
     # fh.setFormatter(formatter)
 
