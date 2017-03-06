@@ -47,6 +47,7 @@ from ryu.base import app_manager
 # from nmaas_network_controller_bak import NMaaS_FrameWork
 from nmaas_framework import NMaaS_FrameWork
 from nmaas_rest_api import NMaaS_RESTAPI
+from nmaas_network_graph import NMaaS_Network_Graph
 
 import invoke as invoke
 import logger as l
@@ -140,6 +141,9 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
 
         #create nmaas fw instance
         self.nmaas_fw = NMaaS_FrameWork(self)
+
+        #create nmass_network_graph instance
+        self.nmaas_graph = NMaaS_Network_Graph()
 
         self.topology_api_app = self
 
@@ -250,6 +254,10 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
             self.switches[dp.id]=dp
             if dp.id not in self.mac_to_ports:
                 self.mac_to_ports[dp.id] = dict()
+
+            #update topology
+            self.update_topology_data()
+
         else:
             self.log.info("Switch with datapath id {} has been disconnected".format(dp.id))
             if dp.id in self.switches:
@@ -257,45 +265,96 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
             if dp.id in self.mac_to_ports:
                 self.mac_to_ports.pop(dp.id)
 
-        # self.log.info("mac_to_ports:{}".format(self.mac_to_ports))
 
-    # ---------- TOPOLOGY DISCOVERY ----------------
-    # @set_ev_cls(event.EventSwitchEnter)
-    def get_topology_data(self, ev):
-        # print("SWITCH ENTERED")
+            # update topology
+            self.update_topology_data()
+
+
+
+
+    # ---------- TOPOLOGY UPDATE ----------------
+    def update_topology_data(self):
+        '''
+        This function updates the topology related to hosts and links among switches.
+        Switches are in the topology and their statuses are handled in connection up/down event in function connection_handler()
+        :return:
+        '''
+        self.log.info("Updating topology...")
+        #FIRST ADD EVERYTHING TO THE NETWORK (DUPLICATES ARE HANDLED BY DEFAULT)
+        #get switch list
+        switch_list = list()
+        self.log.info("SWITCH LIST BEFORE UPDATE: {}".format(switch_list))
         switch_list = get_switch(self.topology_api_app, None)
+        self.log.info("SWITCH LIST AFTER UPDATE: {}".format(switch_list))
+
+        #temprary lists for switches and hosts
+        s_list = list()
+        h_list = list()
+
+        # update switches in topology
+        for switch in switch_list:
+            switch_name = "s-{}".format(switch.dp.id)
+            #add switch to the temporary list of switches
+            s_list.append(switch_name)
+            #add switchs to graph
+            self.nmaas_graph.add_node(switch_name, dp=switch.dp, port=switch.ports)
+
+        # get links and their endpoints
+        links_list = get_link(self.topology_api_app, None)
+
+        #this only goes through the switch links
+        for link in links_list:
+            print link
+            # print "s-{}".format(link.src.dpid), "s-{}".format(link.dst.dpid), \
+            #                     "src_port = {}".format(link.src.port_no), \
+            #                     "dst_port = {}".format(link.dst.port_no)
+            #networkx links in Graph() are not differentiated by source and destination, so a link and its data become
+            #updated when add_edge is called with the source and destination swapped
+            if self.nmaas_graph.get_graph().has_edge("s-{}".format(link.src.dpid), "s-{}".format(link.dst.dpid)):
+                #once a link is added, we do not readd it, since it just updates the data, but there won'be any new link
+                print("Link {}-{} already added...skipping".format(link.src.dpid,link.dst.dpid))
+                continue
+            self.nmaas_graph.add_edge("s-{}".format(link.src.dpid), "s-{}".format(link.dst.dpid),
+                                      src_dpid = link.src.dpid, src_port = link.src.port_no,
+                                      dst_dpid=link.dst.dpid, dst_port = link.dst.port_no)
+
+        # get hosts if there is any
         host_list = get_host(self.topology_api_app, None)
-        links_list = get_link(self.topology_api_app, None)
+        if host_list:
+            for host in host_list:
+                # we create something like h-1, h-2, etc.
+                host_name = "h-{}".format(host.ipv4[0].split(".")[3])
+                #add host to the temporary list of hosts
+                h_list.append(host_name)
+                self.nmaas_graph.add_node(host_name,
+                                          ipv4=host.ipv4,
+                                          ipv6=host.ipv6,
+                                          mac=host.mac,
+                                          connected_to="s-{}".format(host.port.dpid),
+                                          port_no=host.port.port_no)
+                #add corresponding links to the graph
+                self.nmaas_graph.add_edge(host_name,"s-{}".format(host.port.dpid))
+
+        #NOW, REMOVE NODES FROM THE GRAPH WHICH ARE NOT PRESENT IN THE CURRENT TOPOLOGY
+        a = list()
+        a = s_list + h_list
+
+        diff = list()
+
+        #all nodes in the topology
+        #get differences
+        diff = list(set(self.nmaas_graph.get_nodes()) - set(a)) # this will produce a list() of the differences
+
+        if len(diff) > 0:
+            #remove the additional nodes from the graph
+            self.nmaas_graph.remove_nodes_from_list(diff)
+            self.log.info("The following nodes have been removed from the graph:")
+            print(diff)
 
 
 
-        print("---SWITCH LIST")
-        for i in switch_list:
-            pprint(vars(i.dp))
-            # pprint(dir(i.ports))
 
-        print("---LINK LIST")
-        for i in links_list:
-            pprint(vars(i))
-        print("---HOST LIST")
-        for i in host_list:
-            pprint(vars(i))
-
-        # self.log.debug(switch_list)
-        # print("---HOST LIST")
-        # self.log.debug(host_list)
-        # print("---HOST CONNECTED TO SWITCH DP ID 1")
-        # self.log.debug(get_host(self.topology_api_app,switch_list[0].dp.id))
-
-        switches = [switch.dp.id for switch in switch_list]
-        links_list = get_link(self.topology_api_app, None)
-        links = [(link.src.dpid, link.dst.dpid, {'port': link.src.port_no}) for link in links_list]
-
-        # self.log.info(switches)
-        # self.log.info(links)
-
-
-        # ----------------------------------------------
+    # ----------------------------------------------
 
     @set_ev_cls(ofp_event.EventOFPGetConfigReply, MAIN_DISPATCHER)
     def get_config_reply_handler(self, ev):
@@ -378,11 +437,13 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         # print eth
         #ignore lldp
         if eth.ethertype in (ETH_TYPE_LLDP, ETH_TYPE_CFM):
-            # self.get_topology_data(ev)
+
             # self.log.info("LLDP packet - ignore")
             return
         else:
-            # self.get_topology_data(ev)
+            #update topology
+            self.update_topology_data()
+
             dl_src = eth.src
             dl_dst = eth.dst
             in_port = msg.match['in_port']
