@@ -19,13 +19,31 @@ class NMaaS_RESTAPI(ControllerBase):
         path = "%s/html/" % PATH
         print path
         self.static_app = DirectoryApp(path)
+        self.nmaas = self.nmaas_network_controller_app
 
+    @route('topology_update', '/topology/update', methods=['GET'])
+    def topology_update(self, req, **kwargs):
+        self.nmaas.update_topology_data()
+
+    @route('topology_data_graph', '/topology/graph', methods=['GET'])
+    def get_topology_graph(self, req, **kwargs):
+        print self.nmaas.nmaas_graph
+    @route('topology_get_path', '/topology/path/{from}/{to}', methods=['GET'])
+    def get_path(self,req, **kwargs):
+        src=kwargs.get('from', 'h-1')
+        dst=kwargs.get('to', 'h-3')
+        path = self.nmaas.nmaas_graph.get_path(src,dst)
+        if not path:
+            return "Source or destination is not present in the network\n"
+        return path
     @route('mac_tables', '/mactables', methods=['GET'])
     def get_mac_tables(self, req, **kwargs):
         nmaas = self.nmaas_network_controller_app
         print nmaas.mac_to_ports
         print "---===---"
         print nmaas.paths
+
+
 
     @route('hop-by-hop-latency', latency_url, methods=['GET'] )
     def calculate_latency(self, req, **kwargs):
