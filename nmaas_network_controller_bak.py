@@ -21,6 +21,8 @@ from ryu.topology.api import get_switch, get_link
 #      /
 #     h2
 
+from pprint import pprint
+# pprint (vars(your_object))
 
 nmaas_network_controller_instance_name = 'nmaas_network_controller_istance_name'
 latency_url = '/measurement/latency-hop-by-hop/{host_from}/{host_to}'
@@ -108,12 +110,12 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
 
         self.log.debug("Registering NMAAS CONTROLLER RESTAPI")
         wsgi = kwargs['wsgi']
-        # wsgi.register(NMaaS_Network_Controller_RESTAPI,
-        #               {nmaas_network_controller_instance_name: self})
-
-        self.log.debug("Registering GUI_TOPOLOGY")
-        wsgi.register(GUIServerController,
+        wsgi.register(NMaaS_Network_Controller_RESTAPI,
                       {nmaas_network_controller_instance_name: self})
+
+        # self.log.debug("Registering GUI_TOPOLOGY")
+        # wsgi.register(GUIServerController,
+        #               {nmaas_network_controller_instance_name: self})
 
 
         #create nmaas fw instance
@@ -941,6 +943,8 @@ class NMaaS_FrameWork():
 
 
 # ----------- ============= REST API FOR TENANT-CONTROLLER COMMUNICATION ============== -------------
+PATH = os.path.dirname(__file__)
+
 class NMaaS_Network_Controller_RESTAPI(ControllerBase):
     '''
     This class is devoted to describe a REST API for tenant-controller communications
@@ -949,6 +953,10 @@ class NMaaS_Network_Controller_RESTAPI(ControllerBase):
     def __init__(self, req, link, data, **config):
         super(NMaaS_Network_Controller_RESTAPI, self).__init__(req, link, data, **config)
         self.nmaas_network_controller_app = data[nmaas_network_controller_instance_name]
+
+        path = "%s/html/" % PATH
+        print path
+        self.static_app = DirectoryApp(path)
 
     @route('hop-by-hop-latency', latency_url, methods=['GET'] )
     def calculate_latency(self, req, **kwargs):
@@ -1032,33 +1040,18 @@ class NMaaS_Network_Controller_RESTAPI(ControllerBase):
             # nmaas.nmaas_fw.delete_latency_request(host_from,host_to)
             return  ret_val
 
-
-
-
-
-PATH = os.path.dirname(__file__)
-
-class GUIServerController(ControllerBase):
-    def __init__(self, req, link, data, **config):
-        super(GUIServerController, self).__init__(req, link, data, **config)
-        print("GUISERVER CONTROLLER")
-
-        self.nmaas_network_controller_app = data[nmaas_network_controller_instance_name]
-        nmaas=self.nmaas_network_controller_app
-
-
-        path = "%s/ryu/app/gui_topology/html/" % PATH
-        self.static_app = DirectoryApp(path)
-
     @route('topology', '/{filename:.*}')
     def static_handler(self, req, **kwargs):
         if kwargs['filename']:
             req.path_info = kwargs['filename']
         return self.static_app(req)
 
-print("GUISERVER CONTROLLER")
+
+
 app_manager.require_app('ryu.app.rest_topology')
 app_manager.require_app('ryu.app.ws_topology')
 app_manager.require_app('ryu.app.ofctl_rest')
+
+
 
 #
