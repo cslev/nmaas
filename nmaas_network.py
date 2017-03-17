@@ -7,7 +7,7 @@ from mininet.cli import CLI
 from mininet.link import TCLink
 
 
-from nmass_topo import NMaaSTopo
+from nmaas_topo import NMaaSTopo
 
 import logger as l
 
