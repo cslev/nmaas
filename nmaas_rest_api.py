@@ -2,6 +2,7 @@ from webob.static import DirectoryApp
 from ryu.app.wsgi import ControllerBase, WSGIApplication, route
 from ryu.base import app_manager
 import os
+import logger as l
 
 # ----------- ============= REST API FOR TENANT-CONTROLLER COMMUNICATION ============== -------------
 PATH = os.path.dirname(__file__)
@@ -20,6 +21,8 @@ class NMaaS_RESTAPI(ControllerBase):
         print path
         self.static_app = DirectoryApp(path)
         self.nmaas = self.nmaas_network_controller_app
+        self.log = l.getLogger(self.__class__.__name__, self.nmaas.debug_level)
+
 
     @route('topology_update', '/topology/update', methods=['GET'])
     def topology_update(self, req, **kwargs):
@@ -27,23 +30,71 @@ class NMaaS_RESTAPI(ControllerBase):
 
     @route('topology_data_graph', '/topology/graph', methods=['GET'])
     def get_topology_graph(self, req, **kwargs):
-        print self.nmaas.nmaas_graph
+        self.log.info(self.nmaas.nmaas_graph)
+
+    @route('topology_calculate_paths', '/topology/calculate_paths', methods=['GET'])
+    def calculate_paths(self, req, **kwargs):
+        self.nmaas.install_flow_rules()
+
     @route('topology_get_path', '/topology/path/{from}/{to}', methods=['GET'])
     def get_path(self,req, **kwargs):
-        src=kwargs.get('from', 'h-1')
-        dst=kwargs.get('to', 'h-3')
+        src=kwargs.get('from', 'h1')
+        dst=kwargs.get('to', 'h3')
         path = self.nmaas.nmaas_graph.get_path(src,dst)
-        if not path:
-            return "Source or destination is not present in the network\n"
-        return path
+        if path is None:
+            msg = "Source or destination is not present in the network\n"
+            self.log.error(msg)
+            return msg
+        self.log.info(path)
+        retval = ""
+        if len(path) == 1:
+            for n,i in enumerate(path):
+                if n < (len(path)-1):
+                    retval+="{} -> ".format(i)
+                else:
+                    retval += "{}\n".format(i)
+        else:
+            for p in path:
+                for n, i in enumerate(p):
+                    if n < (len(p) - 1):
+                        retval += "{} -> ".format(i)
+                    else:
+                        retval += "{}\n".format(i)
+        return retval
     @route('mac_tables', '/mactables', methods=['GET'])
     def get_mac_tables(self, req, **kwargs):
         nmaas = self.nmaas_network_controller_app
-        print nmaas.mac_to_ports
-        print "---===---"
-        print nmaas.paths
+        self.log.info(nmaas.mac_to_ports)
+
+    @route('draw_network', '/topology/draw', methods=['GET'])
+    def drwaw_network(self, req, **kwargs):
+        image_path = self.nmaas.nmaas_graph.draw_graph()
+        # return image_path
+
+    @route('get_paths', '/nmaas/get_paths/{host_from}/{host_to}', methods=['GET'])
+    def get_paths(self, req, **kwargs):
+        nmaas = self.nmaas_network_controller_app
+        # parsing GET to get {host_from} and {host_to}
+        host_from = kwargs.get('host_from', None)
+        host_to = kwargs.get('host_to', None)
+        if not host_from or not host_to:
+            return "No source and/or destination was set"
 
 
+
+        self.nmaas.get_paths(host_from, host_to)
+
+
+    @route('capture_paths', '/nmaas/capture_paths/{host_from}/{host_to}', methods=['GET'])
+    def capture_paths(self, req, **kwargs):
+        nmaas = self.nmaas_network_controller_app
+        # parsing GET to get {host_from} and {host_to}
+        host_from = kwargs.get('host_from', None)
+        host_to = kwargs.get('host_to', None)
+        if not host_from or not host_to:
+            return "No source and/or destination was set"
+
+        return self.nmaas.capture_paths(host_from, host_to)
 
     @route('hop-by-hop-latency', latency_url, methods=['GET'] )
     def calculate_latency(self, req, **kwargs):
@@ -54,26 +105,28 @@ class NMaaS_RESTAPI(ControllerBase):
         host_to = kwargs.get('host_to', "h3")
 
         #check whether host exists
-        if host_from not in nmaas.paths.keys():
-            return "\nUnknown host {}\n".format(host_from)
-        elif host_to not in nmaas.paths.keys():
-            return "\nUnkown host {}\n".format(host_to)
+        if host_from not in nmaas.nmaas_graph.get_nodes():
+            msg= "\nUnknown host {}\n".format(host_from)
+            self.log.error(msg)
+            return msg
+        elif host_to not in nmaas.nmaas_graph.get_nodes():
+            msg= "\nUnknown host {}\n".format(host_to)
+            self.log.error(msg)
+            return msg
         else:
 
             #registering request
             latencies = list()
 
-            print("\nCalculating hop-by-hop latency between {} and {}\n".format(host_from,host_to))
-            print("The path is:\n")
-            print host_from,
-            for sw in nmaas.paths[host_from][host_to]:
-                #here only switches are coming
-                print "-> "+sw,
-            print "-> " + host_to
+            self.log.info("\nCalculating hop-by-hop latency between {} and {}\n".format(host_from,host_to))
+            path = nmaas.nmaas_graph.get_path(host_from, host_to)
+            self.log.info("The path is:\n{}".format(path))
 
-            hop_count = len(nmaas.paths[host_from][host_to]) - 1
-            path = nmaas.paths[host_from][host_to]
+            path=path[1:-1]
+            hop_count = len(path) - 1
+            # path = nmaas.paths[host_from][host_to]
             for i,sw in enumerate(path):
+                # print sw
                 #here only switches are coming
                 if i == 0:
                     #beginning of the chain
@@ -89,14 +142,15 @@ class NMaaS_RESTAPI(ControllerBase):
                                                 switch=path[i],
                                                 chain_prev=chain_prev,
                                                 chain_next=chain_next,
-                                                from_to="{}-{}".format(host_from, host_to))
+                                                from_to="{}-{}".format(host_from, host_to),
+                                                estimated_time=(hop_count+1)*4)
 
             # namespaces and forwarding rules are installed -> Let's do the pings
-            print("Hop-by-hop measurement is ON!")
-            hop_count = len(nmaas.paths[host_from][host_to]) - 1
-            print("It will take approx. {} seconds".format((hop_count+1)*4))
+            self.log.info("Hop-by-hop measurement is ON!")
+            # hop_count = len(nmaas.paths[host_from][host_to]) - 1
+            self.log.info("It will take approx. {} seconds".format((hop_count+1)*4))
 
-            path = nmaas.paths[host_from][host_to]
+            # path = nmaas.paths[host_from][host_to]
             for i, sw in enumerate(path):
                 # here only switches are coming
                 if i == 0:
