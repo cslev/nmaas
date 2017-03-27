@@ -1,6 +1,7 @@
 import networkx as nx
 import inspect
 from networkx.algorithms.shortest_paths.weighted import all_pairs_dijkstra_path
+import logger as l
 
 try:
     import matplotlib.pyplot as plt
@@ -9,8 +10,10 @@ except:
 
 class NMaaS_Network_Graph():
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         self._G=nx.Graph()
+        self.shortest_paths = None
+        self.log = l.getLogger(self.__class__.__name__, kwargs.get('debug_level', 'INFO'))
 
     def __str__(self):
         graph_desc = "--- === Graph data === ---\n"
@@ -43,7 +46,7 @@ class NMaaS_Network_Graph():
             graph_desc += "\n"
 
         graph_desc += "\n -- Edges --\n"
-        print(self._G.edges())
+        self.log.info(self._G.edges())
         for edge in self._G.edges():
             graph_desc += "Between {} and {}:\n".format(edge[0], edge[1])
             graph_desc += "  {}\n".format(self._G.edge[edge[0]][edge[1]])
@@ -138,7 +141,15 @@ class NMaaS_Network_Graph():
     def get_graph(self):
         return self._G
 
+
+
     def get_path(self,src, dst):
+        '''
+        This function returns all paths between the given source and destination node
+        :param src: String - the source node's name
+        :param dst: String - the destination node's name
+        :return: list of lists
+        '''
         if src not in self._G.nodes() or dst not in self._G.nodes():
             return None
 
@@ -148,6 +159,64 @@ class NMaaS_Network_Graph():
             # return path
 
         return paths
+
+    def _get_shortest_paths(self, src, dst):
+        '''
+        This private function returns all shortest paths between the given source and destination node
+        :param src: String - the source node's name
+        :param dst: String - the destination node's name
+        :return: list of lists
+        '''
+        if src not in self._G.nodes() or dst not in self._G.nodes():
+            return None
+        paths = list()
+        for path in nx.all_shortest_paths(self._G, src, dst):
+            paths.append(path)
+
+        return paths
+
+    def print_path(self, list_of_path):
+        '''
+        This function returns a string constructed by a path stored in a list, i.e., in case of [h1,s1,s2,h2] it returns
+        h1->s1->s2->h2
+        :param list_of_path: List - the list containing a path
+        :return: String: the path
+        '''
+        retVal = ""
+        path_len=len(list_of_path)-1
+        for i,hop in enumerate(list_of_path):
+            if i < path_len:
+                retVal += hop + "->"
+            else:
+                retVal += hop
+        return retVal
+
+    def calculate_all_pair_shortest_paths(self):
+        '''
+        This function calculates all shortest paths for all source and destinations
+        Note: NetworkX also have similar function (all_pairs_shortest_path(G[, cutoff])), however that only gives one
+        shortest path for a given (source,destination) pair
+        :return: dictionary of dictionary of list of lists, e.g., h1:{h2:[[h1,s1,h2],[h1,s2,h2]]}
+        '''
+        all_paths=dict()
+        for n in self.get_nodes(prefix='h'):
+            all_paths[n] = dict()
+            for m in self.get_nodes(prefix='h'):
+                if n == m:
+                    continue
+                all_paths[n][m] = self._get_shortest_paths(n,m)
+
+        self.log.info("Shortest paths were recalculated")
+        self.shortest_paths=all_paths
+
+    def get_all_pair_shortest_paths(self):
+        '''
+        This function returns the stored shortest path dictionary
+        :return: dictionary of dictionary of list of lists, e.g., h1:{h2:[[h1,s1,h2],[h1,s2,h2]]}
+        '''
+
+        return self.shortest_paths
+
 
     def draw_graph(self):
         nx.draw(self._G, pos=nx.spring_layout(self._G))
