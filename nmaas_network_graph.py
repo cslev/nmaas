@@ -22,7 +22,7 @@ class NMaaS_Network_Graph():
         for node in self._G.nodes():
             graph_desc += "{}:\n".format(node)
 
-            if node.startswith('h'):
+            if node.startswith('h') or node.startswith('nmaas'):
                 for i in self._G.node[node]:
                     graph_desc += "  {}:{}\n".format(i,self._G.node[node][i])
             elif node.startswith('s'):
@@ -51,7 +51,7 @@ class NMaaS_Network_Graph():
             graph_desc += "Between {} and {}:\n".format(edge[0], edge[1])
             graph_desc += "  {}\n".format(self._G.edge[edge[0]][edge[1]])
 
-        graph_desc += "--------------------"
+        graph_desc += "--------------------\n"
 
         return graph_desc
 
@@ -87,10 +87,18 @@ class NMaaS_Network_Graph():
         :param ip:
         :return:
         '''
+        retVal = None
         for i in self.get_nodes(prefix='h'):
             if self._G.node[i]['ipv4'][0] == ip:
-                return i
+                retVal = self._G.node[i]
+                return retVal
 
+        if retVal is None:
+            #it wasn't a host, it might be an nmaas module
+            for i in self.get_nodes(prefix='nmaas'):
+                if self._G.node[i]['ipv4'][0] == ip:
+                    retVal = self._G.node[i]
+                    return retVal
         return None
 
 
@@ -154,8 +162,12 @@ class NMaaS_Network_Graph():
             return None
 
         paths = list()
-        for path in nx.all_simple_paths(self._G, src, dst):
-            paths.append(path)
+        try:
+            all_sp = nx.all_simple_paths(self._G, src, dst)
+            for path in all_sp:
+                paths.append(path)
+        except nx.NetworkXNoPath: #no path between src and dst
+            return None
             # return path
 
         return paths
@@ -170,8 +182,13 @@ class NMaaS_Network_Graph():
         if src not in self._G.nodes() or dst not in self._G.nodes():
             return None
         paths = list()
-        for path in nx.all_shortest_paths(self._G, src, dst):
-            paths.append(path)
+        try:
+            all_sp = nx.all_shortest_paths(self._G, src, dst)
+            for path in all_sp:
+                paths.append(path)
+
+        except nx.NetworkXNoPath: #no path between src and dst
+            return None
 
         return paths
 

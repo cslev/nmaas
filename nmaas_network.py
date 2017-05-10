@@ -35,11 +35,11 @@ class NMaaSNetwork():
             # print net.hosts[0].params['ip']
             # print i,h
             if i < (number_of_hosts-1):
-                cmd = "ping -c1 {}".format(net.hosts[i+1].params['ip'])
+                cmd = "ping -c1 {} &".format(net.hosts[i+1].params['ip'])
                 # print cmd
                 h.cmd(cmd)
             else:
-                cmd = "ping -c1 {}".format(net.hosts[0].params['ip'])
+                cmd = "ping -c1 {} &".format(net.hosts[0].params['ip'])
                 # print cmd
                 h.cmd(cmd)
 

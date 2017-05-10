@@ -94,11 +94,11 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         wsgi.register(NMaaS_RESTAPI,
                       {nmaas_network_controller_instance_name: self})
 
-        #create nmaas fw instance
-        self.nmaas_fw = NMaaS_FrameWork(self)
-
         #create nmass_network_graph instance
         self.nmaas_graph = NMaaS_Network_Graph(debug_level=self.debug_level) #pass debug level param for logging
+
+        # create nmaas fw instance
+        self.nmaas_fw = NMaaS_FrameWork(self, self.nmaas_graph)
 
         self.topology_api_app = self
 
@@ -109,7 +109,7 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         self.switches = dict()
         self.hosts = dict()
 
-        self.paths = dict()
+        self.traced_paths = dict()
 
         self.vlans = list()
         for i in range(1,4095):
@@ -180,6 +180,27 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         datapath.send_msg(req)
 
 
+    def install_shortest_path_between_src_dst(self,src,dst):
+        paths = self.nmaas_graph.get_all_pair_shortest_paths()
+        # paths looks like {h1:{h2:[[path1],[path2]]}} <- EXAMPLE
+        p = paths[src][dst][0]
+        source_host = self.nmaas_graph.get_node(src)
+        source_ip = (source_host['ipv4'][0], '255.255.255.255')
+        dst_host = self.nmaas_graph.get_node(dst)
+        destination_ip = (dst_host['ipv4'][0], '255.255.255.255')
+
+        self.log.info("PATH is: {}".format(p))
+        for num, sw in enumerate(p):
+            # print sw
+            if sw.startswith('h'):
+                # it's a host, skip (this will also prevent running out of indexes in both direction (see below))
+                continue
+
+            prev = p[num - 1]
+            current = p[num]
+            next = p[num + 1]
+            self._install_flow_rule_for_chain_link(current, prev, next, source_ip, destination_ip)
+
     def _install_flow_rule_for_chain_link(self,chain_link, chain_prev, chain_next, source_ip, destination_ip):
         '''
         This function installs flow rules to the given datapath for the given IP addresses. According to the chain_prev
@@ -194,6 +215,7 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
 
         table_id = 100
 
+
         datapath = self.nmaas_graph.get_node(chain_link)['dp']
         ofp = datapath.ofproto
         ofp_parser = datapath.ofproto_parser
@@ -203,7 +225,8 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         # --- backward direction
         # get edge_data
         edge = self.nmaas_graph.get_edge(chain_link, chain_prev)
-        if edge['dst_dpid'] == datapath.id:
+        print edge
+        if edge['dst_dpid'] == chain_link:
             # if prev is a host, then it is always the case that edge['dst_port'] stores the port number
             out_port = edge['dst_port']
         else:
@@ -211,19 +234,28 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
             out_port = edge['src_port']
         actions = [ofp_parser.OFPActionOutput(out_port, 0)]
         inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+        self.log.info("install flow rule for SIP {} - DIP {} at {} to forward packet on port {}".format(source_ip,
+                                                                                                        destination_ip,
+                                                                                                        chain_link,
+                                                                                                        out_port))
         self.send_flow_mod(datapath, table_id, match_source_ip, inst)
 
         # --- forward direction
         # get edge_data
         edge = self.nmaas_graph.get_edge(chain_link, chain_next)
-        if edge['dst_dpid'] == datapath.id:
-            # if prev is a host, then it is always the case that edge['dst_port'] stores the port number
+        print edge
+        if edge['dst_dpid'] == chain_link:
+            # if next is a host, then it is always the case that edge['dst_port'] stores the port number
             out_port = edge['dst_port']
         else:
-            # if prev is a switch, then it might be the src_dpid
+            # if next is a switch, then it might be the src_dpid
             out_port = edge['src_port']
         actions = [ofp_parser.OFPActionOutput(out_port, 0)]
         inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+        self.log.info("install flow rule for SIP {} - DIP {} at {} to forward packet on port {}".format(source_ip,
+                                                                                                        destination_ip,
+                                                                                                        chain_link,
+                                                                                                        out_port))
         self.send_flow_mod(datapath, table_id, match_destination_ip, inst)
 
     def install_shortest_paths_flow_rules(self):
@@ -232,9 +264,6 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         :return:
         '''
         paths = self.nmaas_graph.get_all_pair_shortest_paths()
-
-
-
         # paths looks like {h1:{h2:[[path1],[path2]]}} <- EXAMPLE
         for source in paths:  # source = h1
             source_host = self.nmaas_graph.get_node(source)
@@ -252,15 +281,14 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
                     for num,sw in enumerate(individual_path):
                         # print sw
                         if sw.startswith('h'):
-                            # it's a host, skip (this will also prevent running out of indexes in both direction
+                            # it's a host, skip (this will also prevent running out of indexes in both direction (see below))
                             continue
 
                         prev = individual_path[num - 1]
                         current = individual_path[num]
                         next = individual_path[num + 1]
                         self._install_flow_rule_for_chain_link(current, prev, next, source_ip, destination_ip)
-
-
+                    # break #TODO: INSTALL ECMPs/Load-balancers these cases
 
 
     def install_flow_rules(self):
@@ -471,27 +499,6 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
             self.cv.release()
 
 
-    # @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
-    # def _port_stats_reply_handler(self, ev):
-    #     '''
-    #     This function catches the portstat reply message
-    #     :param ev:
-    #     :return:
-    #     '''
-    #     body = ev.msg.body
-    #
-    #     self.log.info('datapath         port     '
-    #                      'rx-pkts  rx-bytes rx-error '
-    #                      'tx-pkts  tx-bytes tx-error')
-    #     self.log.info(  '---------------- -------- '
-    #                     '-------- -------- -------- '
-    #                     '-------- -------- --------')
-    #     for stat in sorted(body, key=attrgetter('port_no')):
-    #         self.logger.info('%016x %8x %8d %8d %8d %8d %8d %8d',
-    #                          ev.msg.datapath.id, stat.port_no,
-    #                          stat.rx_packets, stat.rx_bytes, stat.rx_errors,
-    #                          stat.tx_packets, stat.tx_bytes, stat.tx_errors)
-
     # ---------- TOPOLOGY UPDATE ----------------
     def update_topology_data(self):
         '''
@@ -511,7 +518,9 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         # get hosts if there is any
         hosts_list = get_host(self.topology_api_app, None)
 
-
+        if len(switch_list) == 0 and len(links_list) == 0 and len(hosts_list):
+            #topology is empty - mininet was stopped
+            return
 
 
         #temprary lists for switches and hosts
@@ -558,7 +567,7 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
 
             self.nmaas_graph.add_edge(source, target,
                                       src_dpid = source, src_port =link.src.port_no,
-                                      dst_dpid=link.dst.dpid, dst_port = link.dst.port_no)
+                                      dst_dpid=target, dst_port = link.dst.port_no)
             topology_changed = True
 
         # self.log.warning("Number of hosts: {}".format(len(host_list)))
@@ -566,12 +575,12 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
             for host in hosts_list:
                 #check whether host has IP address
                 if host.ipv4:
-                    #if the ip address of the host corresponds to a module, we name it differently
-                    if host.ipv4[0].startswith("10.{}.".format(self.nmaas_fw.PING_ID)):
-                        host_name = "PM-{}".format(host.ipv4[0])
-                    else:
-                        # we create something like h-1, h-2, etc.
-                        host_name = "h{}".format(host.ipv4[0].split(".")[3])
+                    # #if the ip address of the host corresponds to a module, we name it differently
+                    # if host.ipv4[0].startswith("10.{}.".format(self.nmaas_fw.PING_ID)):
+                    #     host_name = "PM-{}".format(host.ipv4[0])
+                    # else:
+                    # we create something like h-1, h-2, etc.
+                    host_name = "h{}".format(host.ipv4[0].split(".")[3])
                     #add host to the temporary list of hosts
                     h_list.append(host_name)
 
@@ -586,7 +595,7 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
                                               port_no=host.port.port_no)
                         #add corresponding links to the graph
                         self.nmaas_graph.add_edge(host_name,"s{}".format(host.port.dpid),
-                                                  dst_port = host.port.port_no, dst_dpid=host.port.dpid)
+                                                  dst_port = host.port.port_no, dst_dpid="s{}".format(host.port.dpid))
                         topology_changed = True
 
         # self.log.debug("TOPOLOGY UPDATE")
@@ -613,10 +622,13 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
 
         if len(diff) > 0:
             #remove the additional nodes from the graph
-            self.nmaas_graph.remove_nodes_from_list(diff)
-            self.log.info("The following nodes have been removed from the graph:")
-            topology_changed = True
-            print(diff)
+            for i in diff:
+                if not i.startswith('nmaas'): #nmaas hosts are handled differently as they are not mininet hosts
+                    self.nmaas_graph.remove_node(i)
+                    self.log.info("The following nodes have been removed from the graph:")
+                    print(i)
+                    topology_changed = True
+
 
         if topology_changed: # recalculate shortest paths
             self.nmaas_graph.calculate_all_pair_shortest_paths()
@@ -641,6 +653,7 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
                 "port_hw_addr": port.hw_addr,
                 "port_state": port.state
             }
+            self.update_topology_data()
         except TypeError as te:
             self.log.debug("port has not state yet, update later...continue processing")
 
@@ -654,6 +667,7 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         self.log.debug("\tname:\t{}".format(port.name))
         self.log.debug("\tMAC:\t{}".format(port.hw_addr))
         self.log.debug("\tstate:\t{}".format(port.state))
+        self.update_topology_data()
 
     # ------------ PORT MODIFY ------------
     @set_ev_cls(dpset.EventPortModify, CONFIG_DISPATCHER)
@@ -665,6 +679,7 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         self.log.debug("\tname:\t{}".format(port.name))
         self.log.debug("\tMAC:\t{}".format(port.hw_addr))
         self.log.debug("\tstate:\t{}".format(port.state))
+        self.update_topology_data()
 
     @set_ev_cls(ofp_event.EventOFPGetConfigReply, MAIN_DISPATCHER)
     def get_config_reply_handler(self, ev):
@@ -726,85 +741,81 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
                           'flags=%s miss_send_len=%d',
                           flags, msg.miss_send_len)
 
+    def create_5tuple_string(self, eth_type, src_ip, src_port, dst_ip, dst_port):
+        '''
+        This simple function just creates a string from the 5-tuple which format is used across the classes
+        :param src_ip: String - source ip 
+        :param src_port: String - source port
+        :param dst_ip:  String - destination ip
+        :param dst_port: String - destination port
+        :param eth_type: String - ethernet type
+        :return: eth_type-src_ip:src_port->dst_ip:dst_port
+        '''
+        return "{}-{}:{}->{}:{}".format(eth_type, src_ip, src_port, dst_ip, dst_port)
 
-    def capture_paths(self, host_from, host_to):
+    def capture_paths(self, src_ip, src_port, dst_ip, dst_port, eth_type):
         #first get the switch where the host_from is connected - this switch will tag the traffic
 
-        from_to = "{}-{}".format(host_from, host_to)
-        if from_to in self.paths_to_vlan:
-            msg = "A path capturing is already set for {}".format(from_to)
+        to_capture = self.create_5tuple_string(eth_type, src_ip, src_port, dst_ip, dst_port)
+
+        try:
+            src_port = int(src_port)
+            dst_port = int(dst_port)
+        except ValueError:
+            self.log.error("The ports you provided are not integer numbers!")
+            return
+
+        #eth_type comes as a string, so we convert it to int, then to hex
+        eth_type=int(eth_type,16)
+
+        src_host = self.nmaas_graph.get_host_by_ip(src_ip)
+        # print src_host
+        dst_host = self.nmaas_graph.get_host_by_ip(dst_ip)
+        # print dst_host
+        if to_capture in self.paths_to_vlan:
+            msg = "A path capturing is already set for {}".format(to_capture)
             self.log.info(msg)
             return msg
 
-        shortest_paths_from_to = self.nmaas_graph.get_all_pair_shortest_paths()[host_from][host_to]
+        shortest_paths_from_to = self.nmaas_graph.get_all_pair_shortest_paths()[src_host['name']][dst_host['name']]
         if len(shortest_paths_from_to) == 1:
             #no multiple paths
-            msg = "There is only one path between {} and {}: \n".format(host_from, host_to)
+            msg = "There is only one path between {} and {}: \n".format(src_host['name'], dst_host['name'])
             msg += self.nmaas_graph.print_path(shortest_paths_from_to[0]) + "\n"
             return msg
 
 
 
-
-
-        src_host=self.nmaas_graph.get_node(host_from)
-        src_mac = src_host['mac']
-        src_ip = src_host['ipv4'][0]
-        src_switch = self.nmaas_graph.get_node(src_host['connected_to'])
-        dst_host = self.nmaas_graph.get_node(host_to)
-        dst_ip = dst_host['ipv4'][0]
         netmask='255.255.255.255' #for exact match
         dst_switch = self.nmaas_graph.get_node(dst_host['connected_to'])
 
-        #add table 0 for differentiating and tagging traffic coming from src_host
-        datapath = src_switch['dp']
-        ofp = datapath.ofproto
-        ofp_parser = datapath.ofproto_parser
 
         #this will identify traffic of host_from
         vlan_id = self.vlans.pop()
 
         #store used vlan id for the requested path
-        self.paths_to_vlan["{}-{}".format(host_from, host_to)] = vlan_id
-
-        self.log.info("sending flow_mod to first-hop switch {} to capture traffic of {} with vlan_id {}".format(
-                                                                                                src_host['connected_to'],
-                                                                                                host_from,
-                                                                                                vlan_id))
-
-        #send flow mods to first hop switch
-        # ---- TAGGING ----
-        match = ofp_parser.OFPMatch(eth_type=0x0800, ipv4_src=(src_ip,netmask), ipv4_dst=(dst_ip,netmask))
-        f = ofp_parser.OFPMatchField.make(
-            ofp.OXM_OF_VLAN_VID, vlan_id)
-
-        actions = [ofp_parser.OFPActionPushVlan(ETH_TYPE_8021Q),
-                   ofp_parser.OFPActionSetField(f)]
-        inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS,actions),
-                ofp_parser.OFPInstructionGotoTable(100)]
-        self.send_flow_mod(datapath, 0, match, inst, buffer_id=0xffffffff, priority=1000)
-
-        # direct every other traffic to table 100 as well
-        # untagged traffic will be handled normally
-        match = ofp_parser.OFPMatch(vlan_vid=0x0000)
-        # actions = [ofp_parser.OFPActionPopVlan()]
-        inst = [ofp_parser.OFPInstructionGotoTable(100)]
-        self.send_flow_mod(datapath, 0, match, inst, buffer_id=0xffffffff, priority=1)
+        self.paths_to_vlan[to_capture] = vlan_id
 
 
-
-
+        # ---- ========   UNTAGGING  ========= ----
+        #first, we install untagging rule at the last hop switch
         datapath = dst_switch['dp']
         ofp = datapath.ofproto
         ofp_parser = datapath.ofproto_parser
 
-        self.log.info("sending flow_mod to first-hop switch {} to capture traffic of {} with vlan_id {}".format(
-            dst_host['connected_to'],
-            host_from,
-            vlan_id))
+        self.log.info("sending flow_mod to last-hop switch {} to capture traffic of 5-tuple ({},{},{},{},{}) with "
+                      "vlan_id {}".format(dst_host['connected_to'],
+                                          eth_type,
+                                          src_ip,
+                                          src_port,
+                                          dst_ip,
+                                          dst_port,
+                                          vlan_id))
+
+
 
         #send flow mods to the last hop switch
-        # ---- UNTAGGING ----
+
         #untagged traffic will be handled normally
         match = ofp_parser.OFPMatch(vlan_vid=0x0000)
         # actions = [ofp_parser.OFPActionPopVlan()]
@@ -824,15 +835,18 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
                 ofp_parser.OFPInstructionGotoTable(100)]
         self.send_flow_mod(datapath, 1, match, inst, buffer_id=0xffffffff, priority=1)
 
+
+        # ---- ========   COUNTING  ========= ----
         #install capture rules to other switch
+
         rest = list()
         for i in shortest_paths_from_to:
             if len(i) == 3:
-                self.log.info("{} is only one hop away from {}".format(host_from,host_to))
+                self.log.info("{} is only one hop away from {}".format(src_host['name'],dst_host['name']))
                 #the host are only one hop away, no need for counting, as tagging and untagging switch is also the same
                 continue
             elif len(i) == 4:
-                self.log.info("{} is only 2 hop away from {}".format(host_from,host_to))
+                self.log.info("{} is only 2 hop away from {}".format(src_host['name'],dst_host['name']))
                 #each host's switch is directly connected, i.e., no need for counting
                 continue
             else:
@@ -840,7 +854,13 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
                 for sw in in_between:
                     #first element is host, second is tagging switch, last element host, penultimate untagging switch
                     #we only need the switches between
-                    self.log.info("Installing counting rules for {}-{} at switch {}".format(host_from, host_to, sw))
+                    self.log.info("Installing counting rules for 5-tuple ({},{},{},{},{}) at switch {}".format(
+                                  eth_type,
+                                  src_ip,
+                                  src_port,
+                                  dst_ip,
+                                  dst_port,
+                                  sw))
 
                     datapath = self.nmaas_graph.get_node(sw)['dp']
                     self.log.info("s{}".format(datapath.id))
@@ -865,7 +885,51 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
                     inst = [ofp_parser.OFPInstructionGotoTable(100)]
                     self.send_flow_mod(datapath, 1, match, inst, buffer_id=0xffffffff, priority=1)
 
-        # print out the possible paths
+
+        # ---- ==========   TAGGING   =========== ----
+        # tagging tules must be installed last to avoid packet_loss realization: if first switch already tags the packets
+        #a priori to installing counting rules and untagging rules, the system will definitely realize this as a packet
+        #loss as more tagged packets are going to calculated as untagged
+        src_switch = self.nmaas_graph.get_node(src_host['connected_to'])
+        datapath = src_switch['dp']
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+        self.log.info(
+            "sending flow_mod to first-hop switch {} to capture traffic of 5-tuple ({},{},{},{},{}) with "
+            "vlan_id {}".format(src_host['connected_to'],
+                                eth_type,
+                                src_ip,
+                                src_port,
+                                dst_ip,
+                                dst_port,
+                                vlan_id))
+
+        # send flow mods to first hop switch
+        match = ofp_parser.OFPMatch(eth_type=eth_type,
+                                    ip_proto=6,
+                                    ipv4_src=(src_ip, netmask),
+                                    ipv4_dst=(dst_ip, netmask),
+                                    tcp_src=src_port,
+                                    tcp_dst=dst_port)
+        f = ofp_parser.OFPMatchField.make(
+            ofp.OXM_OF_VLAN_VID, vlan_id)
+
+        actions = [ofp_parser.OFPActionPushVlan(ETH_TYPE_8021Q),
+                   ofp_parser.OFPActionSetField(f)]
+        inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions),
+                ofp_parser.OFPInstructionGotoTable(100)]
+        self.send_flow_mod(datapath, 0, match, inst, buffer_id=0xffffffff, priority=1000)
+
+        # direct every other traffic to table 100 as well
+        # untagged traffic will be handled normally
+        match = ofp_parser.OFPMatch(vlan_vid=0x0000)
+        # actions = [ofp_parser.OFPActionPopVlan()]
+        inst = [ofp_parser.OFPInstructionGotoTable(100)]
+        self.send_flow_mod(datapath, 0, match, inst, buffer_id=0xffffffff, priority=1)
+
+
+
+                # print out the possible paths
         msg = "Possible paths:\n"
 
         for i,path in enumerate(shortest_paths_from_to):
@@ -874,9 +938,52 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         return msg
 
 
+    # --------- DELETING A FLOW RULE -------------
+    def remove_flow(self,datapath, table_id, match, **args):
+        '''
+        This function removes a flow from the given datapath
+        :param datapath: the datapath element
+        :param table_id: the id of the table that consists of the flow rule
+        :param match: OFPMatch element
+        :param args: further arguments possible to set for OFPFlowMod
+        :return: 
+        '''
+        ofp = datapath.ofproto
+        ofp_parser = datapath.ofproto_parser
+
+        cookie = args.get('cookie', 0)
+        cookie_mask = args.get('cookie_mask', 0)
+        idle_timeout = args.get('idle_timeout', 0)
+        hard_timeout = args.get('hard_timeout', 0)
+        priority = args.get('priority', 1000)
+        buffer_id = args.get('buffer_id', ofp.OFP_NO_BUFFER)
+        mod_type = args.get('mod_type', ofp.OFPFC_DELETE)
+        flag = args.get('flags', ofp.OFPFF_SEND_FLOW_REM)
+        instructions = args.get('instructions', [])
+
+
+        req = ofp_parser.OFPFlowMod(datapath,
+                                    cookie,
+                                    cookie_mask,
+                                    table_id,
+                                    mod_type,
+                                    idle_timeout,
+                                    hard_timeout,
+                                    priority,
+                                    buffer_id,
+                                    ofp.OFPP_ANY,
+                                    ofp.OFPG_ANY,
+                                    ofp.OFPFF_SEND_FLOW_REM,
+                                    match,
+                                    instructions)
+
+        datapath.send_msg(req)
+
+
+
 
     # ---------- GETTING THE PRACTICAL PATHS ------------
-    def get_paths(self, host_from, host_to):
+    def get_paths(self, src_ip, src_port, dst_ip, dst_port, eth_type):
         '''
         This function will gives the list of switches that took part in the packet forwarding
         :param host_from: the source host
@@ -884,63 +991,77 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         :return:
         '''
 
-        source_host = self.nmaas_graph.get_node(host_from)
-        destination_host = self.nmaas_graph.get_node(host_to)
+        to_capture = self.create_5tuple_string(eth_type, src_ip, src_port, dst_ip, dst_port)
+
+        try:
+            src_port = int(src_port)
+            dst_port = int(dst_port)
+        except ValueError:
+            self.log.error("The ports you provided are not integer numbers!")
+            return
+
+        # eth_type comes as a string, so we convert it to int, then to hex
+        eth_type = int(eth_type, 16)
+
+        src_host = self.nmaas_graph.get_host_by_ip(src_ip)
+        # print src_host
+        dst_host = self.nmaas_graph.get_host_by_ip(dst_ip)
+
         number_of_switches_involved = 1 #there is always at least one switch in the path
 
-        if source_host is None or destination_host is None:
+        if src_host is None or dst_host is None:
             msg = "Source or destination host does not exists!"
             self.log.error(msg)
             return msg
 
-        path_string = "{}-{}".format(host_from, host_to)
-
-        if path_string not in self.paths_to_vlan:
-            msg = "There was not trace capture set up for source or destination hosts {} and {}!".format(host_from,host_to)
+        if to_capture not in self.paths_to_vlan:
+            msg = "There was not trace capture set up for 5-tuple ({},{},{},{},{})!".format(eth_type,
+                                                                                            src_ip,
+                                                                                            src_port,
+                                                                                            dst_ip,
+                                                                                            dst_port)
             self.log.error(msg)
             return msg
 
-
         #first, get the vlan id, which identifies the paths
-        vlan_id = self.paths_to_vlan["{}-{}".format(host_from, host_to)]
+        vlan_id = self.paths_to_vlan[to_capture]
 
 
         #Then, get the source switch that tags the packet
-        first_hop_switch = self.nmaas_graph.get_node(source_host['connected_to'])
+        first_hop_switch = self.nmaas_graph.get_node(src_host['connected_to'])
         dp = first_hop_switch['dp']
         ofp_parser = dp.ofproto_parser
-        src_ip = source_host['ipv4'][0]
-        dst_ip = destination_host['ipv4'][0]
+
         netmask='255.255.255.255'
-        match = ofp_parser.OFPMatch(eth_type=0x0800, ipv4_src=(src_ip,netmask), ipv4_dst=(dst_ip,netmask))
-        self.log.debug("sending request to first-hop-switch ({})".format(source_host['connected_to']))
-        self.request_stats(dp, match=match, table_id=0)
+        first_hop_match = ofp_parser.OFPMatch(eth_type=0x0800, ipv4_src=(src_ip,netmask), ipv4_dst=(dst_ip,netmask))
+        self.log.debug("sending request to first-hop-switch ({})".format(src_host['connected_to']))
+        self.request_stats(dp, match=first_hop_match, table_id=0)
 
         #Next, get the last-hop switch that untags the packets
-        last_hop_switch = self.nmaas_graph.get_node(destination_host['connected_to'])
+        last_hop_switch = self.nmaas_graph.get_node(dst_host['connected_to'])
         if last_hop_switch == first_hop_switch:
             #hosts are only 1 hop away. TODO: tag and untag rules for the same traffic at the same switch are not handled
-            msg = "{} and {} are attached to the same switch {}".format(host_from,host_to,last_hop_switch)
+            msg = "{} and {} are attached to the same switch {}".format(src_host['name'],dst_host['name'],last_hop_switch)
             self.log.warning(msg)
             return msg
         dp = last_hop_switch['dp']
         ofp_parser = dp.ofproto_parser
-        match = ofp_parser.OFPMatch(vlan_vid=0x1000 | vlan_id)
-        self.log.debug("sending request to last-hop-switch ({})".format(destination_host['connected_to']))
-        self.request_stats(dp, match=match, table_id=1)
+        last_hop_match = ofp_parser.OFPMatch(vlan_vid=0x1000 | vlan_id)
+        self.log.debug("sending request to last-hop-switch ({})".format(dst_host['connected_to']))
+        self.request_stats(dp, match=last_hop_match, table_id=1)
         #update number of switches whereto requests will be sent
         number_of_switches_involved+=1
 
         #Last, but not least get the counting switches
-        shortest_paths_from_to = self.nmaas_graph.get_all_pair_shortest_paths()[host_from][host_to]
+        shortest_paths_from_to = self.nmaas_graph.get_all_pair_shortest_paths()[src_host['name']][dst_host['name']]
         rest = list()
         for i in shortest_paths_from_to:
             if len(i) == 3:
-                self.log.info("{} is only one hop away from {}".format(host_from, host_to))
+                self.log.info("{} is only one hop away from {}".format(src_host['name'], dst_host['name']))
                 # the host are only one hop away, no need for counting, as tagging and untagging switch is also the same
                 continue
             elif len(i) == 4:
-                self.log.info("{} is only 2 hop away from {}".format(host_from, host_to))
+                self.log.info("{} is only 2 hop away from {}".format(src_host['name'], dst_host['name']))
                 # each host's switch is directly connected, i.e., no need for counting
                 continue
             else:
@@ -975,12 +1096,12 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         # self.log.info(self.last_flowstats)
         # print(source_host['connected_to'])
         # print(vlan_id)
-        tagging_switch = source_host['connected_to']
-        tagged_packets = self.last_flowstats[source_host['connected_to']]['tagging'][vlan_id]
+        tagging_switch = src_host['connected_to']
+        tagged_packets = self.last_flowstats[src_host['connected_to']]['tagging'][vlan_id]
         self.log.info("First-hop switch {} tagged  {} packets:".format(tagging_switch, tagged_packets))
 
-        untagging_switch = destination_host['connected_to']
-        untagged_packets = self.last_flowstats[destination_host['connected_to']]['untagging'][vlan_id]
+        untagging_switch = dst_host['connected_to']
+        untagged_packets = self.last_flowstats[dst_host['connected_to']]['untagging'][vlan_id]
         self.log.info("Last-hop switch {} untagged {} packets:".format(untagging_switch, untagged_packets))
 
         if(tagged_packets != untagged_packets):
@@ -1001,20 +1122,41 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         self.log.debug("------ ALL FLOW STATS -------")
         print(self.last_flowstats)
 
-        print(in_between)
+        # print(in_between)
+        #delete capture rules
+        self.log.info("Deleting capture rules")
+        #first hop switch - tagging
+        self.remove_flow(first_hop_switch['dp'], 0, first_hop_match, priority=1000)
+        self.log.info("First hop switch cleared")
+        # last hop switch - untagging
+        self.remove_flow(last_hop_switch['dp'], 1, last_hop_match, priority=1)
+        self.log.info("Last hop switch cleared")
+        # counting switches
+        for counting_switch in in_between:
+            dp = self.nmaas_graph.get_node(sw)['dp']
+            match = ofp_parser.OFPMatch(vlan_vid=0x1000 | vlan_id)
+            self.remove_flow(dp, 1, match, priority=1)
+            self.log.info("Counting switch {} cleared".format(sw))
 
+        #releasing used vlan tag
+        self.vlans.append(vlan_id)
+        self.paths_to_vlan.pop(to_capture)
 
-        path = [host_from, first_hop_switch['name']]
+        path = [src_host['name'], first_hop_switch['name']]
         #construct path
         self.log.info("Reconstructing path")
-        path_and_remains = self._construct_path(first_hop_switch['name'],in_between, path)
+        path_and_remains = self._construct_path(first_hop_switch['name'], in_between, path)
         while len(path_and_remains[1]) > 0: #there is still switches remaining
             path_and_remains = self._construct_path(path_and_remains[0][-1],path_and_remains[1], path_and_remains[0])
         self.log.info("Path reconstructed")
         path = path_and_remains[0]
         path.append(last_hop_switch['name'])
-        path.append(host_to)
-        print path
+        path.append(dst_host['name'])
+        # print path
+
+        # store the traced path
+        self.traced_paths[to_capture] = path
+
         msg = " -- Path:\n"
         msg += self.nmaas_graph.print_path(path)
         msg += "\n"
@@ -1166,17 +1308,19 @@ class NMaaS_Network_Controller(app_manager.RyuApp):
         dst_ip = full_packet[1].dst_ip
         dl_src = full_packet[1].src_mac
 
+        # print "src_ip:{}, dst_ip:{}".format(src_ip,dst_ip)
 
         source_host = self.nmaas_graph.get_host_by_ip(src_ip)
         destination_host = self.nmaas_graph.get_host_by_ip(dst_ip)
 
         if source_host is None or destination_host is None:
+            print
             self.log.warning("Hosts are not known to the controller (yet)")
             return
 
-        self.log.info("{} is looking for the MAC of {}".format(source_host,destination_host))
+        self.log.info("{} is looking for the MAC of {}".format(source_host['name'],destination_host['name']))
 
-        dl_dst = self.nmaas_graph.get_node(destination_host)['mac']
+        dl_dst = destination_host['mac']
         # pass
 
         pkt.add_protocol(ethernet.ethernet(ethertype=pkt_ethernet.ethertype,

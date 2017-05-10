@@ -45,7 +45,7 @@ class NMaaSTopo(Topo):
 
 
 
-        self.addLink(s1,h1,delay='10ms')
+        self.addLink(s1, h1,delay='10ms')
         self.addLink(s2, h2, delay='5ms')
         self.addLink(s2, h3, delay='1ms')
         self.addLink(s1, s2, delay='2ms')

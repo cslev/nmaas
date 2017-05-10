@@ -12,14 +12,16 @@ class NMaaS_FrameWork():
     '''
     PING_ID = 200 # this will represent the PING MODULE in the IP ADDRESS' second segment
     OTHER_MODULE_ID = 100 #
-    def __init__(self, nmaas_network_controller):
+    def __init__(self, nmaas_network_controller, nmaas_network_graph):
         '''
         Constructor
         :param nmaas_network_controller: reference to main NMaaS_Network_Controller to reach its functions, e.g., flowmod
+        :param nmaas_network_graph: reference to NMaaS_network_graph to add netns nodes as host to the graph
         '''
 
         # self.log.debug("NMaaS Framework instantiated for system level commands...")
         self.nmaas_network_controller = nmaas_network_controller
+        self.nmaas_network_graph = nmaas_network_graph
 
         # get a logger
         self.log = l.getLogger(self.__class__.__name__, self.nmaas_network_controller.debug_level)
@@ -60,6 +62,11 @@ class NMaaS_FrameWork():
                         cmd="ovs-vsctl del-port {} {}-ping-veth{}".format(sw,sw,veth)
                         invoke.invoke(command=cmd)
 
+                        #remove edge from the graph
+                        self.nmaas_network_graph.remove_edge(sw,"nmaas-{}-ping-veth{}".format(sw,veth))
+                        #remove nodes from the graph
+                        self.nmaas_network_graph.remove_node("nmaas-{}-ping-veth{}".format(sw,veth))
+
                     i=i+1
 
                 #sort self.switch_data again as it was in the beginning
@@ -94,8 +101,6 @@ class NMaaS_FrameWork():
         rule installation
         '''
 
-
-
         module = kwargs.get('module', 'ping')
         switch = kwargs.get('switch', None)
         #these are for the private function add_flow_rules(), not really used in this function
@@ -124,14 +129,17 @@ class NMaaS_FrameWork():
             self.log.debug("ERROR: Switch DPID could not be greater than 255! EXITING!")
             exit(-1)
 
-        ip = "10.{}.{}".format(ip_identifier,sw_dpid)
+        ip = "10.{}.{}".format(ip_identifier, sw_dpid)
+
+        #This is the basis of how the MAC addresses are assigned to the modules
+        base_mac = "{:02x}:{:02x}:EE:QQ:QQ:QQ".format(ip_identifier,sw_dpid)
 
         #check whether the given switch was already took part in any of
         if switch not in self.switch_data.keys():
             self.switch_data[switch]={
-                                                    "veth_id" : list(), # these lists will grow with time
-                                                    "ip_end"  : list()
-                                                }
+                                        "veth_id" : list(), # these lists will grow with time
+                                        "ip_end"  : list()
+                                     }
 
         # --------- Allocating new veths -----------
         #create unused IDs for veths and unused numbers IPs' 4th segment
@@ -176,7 +184,7 @@ class NMaaS_FrameWork():
         self.log.debug("Add ping module to switch {}\n".format(switch))
 
         #create namespace
-        ns_name = "{}-ping-{}".format(switch,from_to)
+        ns_name = "{}-ping-{}".format(switch, from_to)
         self.log.debug("-- CREATE NAMESPACE")
         cmd = "ip netns add {}".format(ns_name)
         self.log.debug(cmd)
@@ -192,6 +200,21 @@ class NMaaS_FrameWork():
         self.log.debug(cmd)
         self.log.debug(invoke.invoke(command=cmd)[0])
 
+        #SETTING UP MAC ADDRESSES FOR THESE NODES
+        mac_1 = base_mac.replace("QQ:QQ:QQ","{}:{}:{}".format(binascii.b2a_hex(os.urandom(1)),
+                                                              binascii.b2a_hex(os.urandom(1)),
+                                                              binascii.b2a_hex(os.urandom(1))))
+
+        cmd = "ip link set dev {}-ping-veth{} address {}".format(switch,veths[0], mac_1)
+        self.log.debug(cmd)
+        self.log.debug(invoke.invoke(command=cmd)[0])
+        mac_2 = base_mac.replace("QQ:QQ:QQ","{}:{}:{}".format(binascii.b2a_hex(os.urandom(1)),
+                                                              binascii.b2a_hex(os.urandom(1)),
+                                                              binascii.b2a_hex(os.urandom(1))))
+        cmd = "ip link set dev {}-ping-veth{} address {}".format(switch, veths[1], mac_2)
+        self.log.debug(cmd)
+        self.log.debug(invoke.invoke(command=cmd)[0])
+
 
 
         # add secondary veth device into the namespace
@@ -200,16 +223,16 @@ class NMaaS_FrameWork():
         self.log.debug(cmd)
         self.log.debug(invoke.invoke(command=cmd)[0])
 
-        # change MAC of the netns device
-        cmd = "ip netns exec {} ip link set dev {}-ping-veth{} address be:ef:be:ef:{}:{}".format(
-                                                                                ns_name,
-                                                                                switch,
-                                                                                veths[1],
-                                                                                binascii.b2a_hex(os.urandom(1)),
-                                                                                binascii.b2a_hex(os.urandom(1)))
-        self.log.debug(" -- CHANGING MAC ADDRESS OF VETH in the namespace")
-        self.log.debug(cmd)
-        self.log.debug(invoke.invoke(command=cmd)[0])
+        # # change MAC of the netns device
+        # cmd = "ip netns exec {} ip link set dev {}-ping-veth{} address be:ef:be:ef:{}:{}".format(
+        #                                                                         ns_name,
+        #                                                                         switch,
+        #                                                                         veths[1],
+        #                                                                         binascii.b2a_hex(os.urandom(1)),
+        #                                                                         binascii.b2a_hex(os.urandom(1)))
+        # self.log.debug(" -- CHANGING MAC ADDRESS OF VETH in the namespace")
+        # self.log.debug(cmd)
+        # self.log.debug(invoke.invoke(command=cmd)[0])
 
         # WE DON'T NEED TO ADD IP ADDRESS TO OTHER END OF THE VETH AS IT IS CONNECTED TO OVS!
         # add ip addresses to veth devices
@@ -218,13 +241,15 @@ class NMaaS_FrameWork():
         # self.log.debug(cmd)
         # self.log.debug(invoke.invoke(command=cmd)[0])
 
-        cmd = "ip netns exec {} ip addr add {}.{}/32 dev {}-ping-veth{}".format(ns_name,
+        cmd = "ip netns exec {} ip addr add {}.{}/16 dev {}-ping-veth{}".format(ns_name,
                                                                                  ip,
                                                                                  module_ip_end,
                                                                                  switch,
                                                                                  veths[1])
         self.log.debug(cmd)
         self.log.debug(invoke.invoke(command=cmd)[0])
+
+
 
         # bring up veth devices
         self.log.debug("-- BRINGING UP VETH DEVICES")
@@ -259,10 +284,27 @@ class NMaaS_FrameWork():
 
         # # this command above will initiate a PORT ADDED event to the controller, from where we could become aware
         # # of the new port number that needs to be used in the new flow rules
-        # port_number = self.nmaas_network_controller.switches[switch_to_connect]['recent_ports_data']["port_no"]
+        sw = self.nmaas_network_controller.nmaas_graph.get_node(switch)
+        port_number = sw['recent_port_data']["port_no"]
         # self.log.debug("new port number on switch {} is {}".format(switch_to_connect, port_number))
         #
         # return port_number
+
+        # ADD NODES TO THE GRAPH IN ORDER TO ASSIST ARP RESPONDER
+        host_name = "nmaas-{}-ping-veth{}".format(switch, veths[0])
+        # self.log.info("Adding {} to network graph".format(host_name))
+        self.nmaas_network_graph.add_node(host_name,
+                                          name=host_name,
+                                          ipv4=["{}.{}".format(ip, module_ip_end)],
+                                          ipv6=[],
+                                          mac=mac_2,
+                                          connected_to=switch,
+                                          port_no=port_number)
+
+        # add corresponding links to the graph
+        # self.log.info("Adding link {}-{} to network graph".format(host_name,switch))
+        self.nmaas_network_graph.add_edge(host_name, switch,
+                                  dst_port=port_number, dst_dpid=switch)
 
         #registering module data
         self.modules["latency-hbh"][from_to]["namespaces"].extend([ns_name])
@@ -276,9 +318,11 @@ class NMaaS_FrameWork():
                              chain_prev=chain_prev,
                              chain_next=chain_next,
                              module_id=ip_identifier, # second segment of the IP address of the module, e.g., 200 (PING)
-                             module_ip_end=module_ip_end, # last segment of trhe IP address identifying exactly the module
+                             module_ip_end=module_ip_end, # last segment of the IP address identifying exactly the module
                              estimated_time=estimated_time
-                             )
+                             # estimated_time = 0
+
+        )
 
 
 
@@ -325,7 +369,7 @@ class NMaaS_FrameWork():
         inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         self.nmaas_network_controller.send_flow_mod(
             datapath,  # DP
-            0,         # table_id
+            100,         # table_id
             match,     # match
             inst,      # instruction
             priority=HIGHEST_PRIORITY,  #additional arguments
@@ -351,7 +395,7 @@ class NMaaS_FrameWork():
             inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
             self.nmaas_network_controller.send_flow_mod(
                 datapath,  # DP
-                0,  # table_id
+                100,  # table_id
                 match,  # match
                 inst,  # instruction
                 priority=HIGHEST_PRIORITY,  # additional arguments
@@ -383,7 +427,7 @@ class NMaaS_FrameWork():
             inst = [ofp_parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
             self.nmaas_network_controller.send_flow_mod(
                 datapath,  # DP
-                0,  # table_id
+                100,  # table_id
                 match,  # match
                 inst,  # instruction
                 priority=HIGHEST_PRIORITY,  # additional arguments
@@ -426,8 +470,9 @@ class NMaaS_FrameWork():
         # self.log.debug("Deleting ping logs")
         invoke.invoke(command="rm -rf {}".format(filename))
 
-        # return the average RTT value
-        return avg/3.0
+        #return the average RTT value (3 measurements, and because of round-trip-time we divide it by 2 to get the
+        #latency of one direction
+        return avg/3.0/2.0
 
 
     def delete_flow_rule(self, **kwargs):
