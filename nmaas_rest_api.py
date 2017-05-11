@@ -40,6 +40,8 @@ class NMaaS_RESTAPI(ControllerBase):
                "vlan-based capture rules in the switches for the given hosts defined by from and to\n"
         msg += "  - /nmaas/get_paths/{from}/{to} : According to the capture rules, NMaaS gives you the paths and also " \
                "prints out the number of lost packets\n"
+	msg += "  - /nmaas/HEL/{src_ip}/{src_port}/{dst_ip}/{dst_port}/{eth_type}: This will initate hop-by-hop latency " \
+	       "on the path the controller traced before by capture_path and get_path functions"
         return msg
 
     @route('topology_update', '/topology/update', methods=['GET'])

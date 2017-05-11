@@ -13,21 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Usage example
-
-1. Join switches (use your favorite method):
-$ sudo mn --controller remote --topo tree,depth=3
-
-2. Run this application:
-$ PYTHONPATH=. ./bin/ryu run \
-    --observe-links ryu/app/gui_topology/nmaas_network_controller.py
-
-3. Access http://<ip address of ryu host>:8080 with your web browser.
-
-@route('topology', '/{filename:(?!v1.0).*}')
-    @route('topology', '/app/{filename:.*}')
-"""
 import copy
 import os
 from networkx.relabel import _relabel_copy
