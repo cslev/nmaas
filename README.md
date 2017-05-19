@@ -1,5 +1,5 @@
-# End-host Driven Troubleshooting (EDT) Architecture for Software-Defined Networking
-This PoC code is for an envisioned architecture discussed in a research paper submitted to Globecom 2017.
+# User Driven Troubleshooting Architecture for Software-Defined Networking
+This PoC code is for an envisioned architecture discussed in a research paper.
 
 ## Requirements:
  - python 
@@ -9,7 +9,7 @@ This PoC code is for an envisioned architecture discussed in a research paper su
  - curl for interacting with the controller
  
 ## Quick Walkthrough:
- The Proof-of-Concept of EDT is written in a way to demonstrate its process step by step by providing a REST API a user can use for following the operation.
+ The Proof-of-Concept of the architecture is written in a way to demonstrate its process step by step by providing a REST API a user can use for following the operation.
 ###### First, download the source into ryu/ryu/app/ directory:
 ```
 $ cd $HOME/ryu/ryu/app/
