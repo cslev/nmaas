@@ -1,9 +1,7 @@
 # User Driven Troubleshooting Architecture for Software-Defined Networking
 This PoC code is for an envisioned architecture discussed in a research paper.
 
-[Demo showcase @ youtube](https://cloud.githubusercontent.com/assets/8448436/26256830/23f51ff0-3cb6-11e7-92aa-e240db71e676.png)
-
-[CLICK HERE 4 YOUTUBE DEMO](https://www.youtube.com/watch?v=o389kng73TM)
+[![Demo showcase @ youtube](https://cloud.githubusercontent.com/assets/8448436/26256830/23f51ff0-3cb6-11e7-92aa-e240db71e676.png)](https://www.youtube.com/watch?v=o389kng73TM)
 
 
 ## Requirements:
