@@ -1,4 +1,4 @@
-# User Driven Troubleshooting Architecture for Software-Defined Networking
+# End-host Driven Troubleshooting Architecture for Software-Defined Networking
 This PoC code is for an envisioned architecture discussed in a research paper.
 
 [![Demo showcase @ youtube](https://cloud.githubusercontent.com/assets/8448436/26256830/23f51ff0-3cb6-11e7-92aa-e240db71e676.png)](https://www.youtube.com/watch?v=o389kng73TM)
@@ -12,7 +12,7 @@ This PoC code is for an envisioned architecture discussed in a research paper.
  - curl for interacting with the controller
  
 ## Quick Walkthrough:
- The Proof-of-Concept of the architecture is written in a way to demonstrate its process step by step by providing a REST API a user can use for following the operation.
+ The Proof-of-Concept of the architecture is written in a way to demonstrate its process step by step by using its REST API.
 ###### First, download the source into ryu/ryu/app/ directory:
 ```
 $ cd $HOME/ryu/ryu/app/
@@ -45,7 +45,7 @@ $ sudo mn --clean; sudo python nmaas_network.py;
 ```
 For demonstrational purposes, the links are set to have different delays by default.
 
-After this mininet fires up the following topology, where the numbers on the links shows the port identifiers, and each link's cost is 1:
+After this, mininet fires up the following topology, where the numbers on the links shows the port identifiers, and each link's cost is 1:
 ![topology](https://cloud.githubusercontent.com/assets/8448436/25897428/d6d7a84c-357f-11e7-8459-7186db73aa81.png)
 One can observe from the output of the controller that it finds the switches and hosts and they are added to the network graph.
 
